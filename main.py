@@ -241,16 +241,25 @@ DECISIVE_MARKERS = ["incident-window record", "incident window record"]
 # an 80k-token noisy transcript. AI is used only as a fallback when nothing
 # matches, never as the primary decision-maker.
 ROOT_CAUSE_SIGNALS = {
-    "deployment_regression": ["release", "rollout", "deploy", "rolled out", "previous release"],
+    "deployment_regression": ["release", "rollout", "deploy", "rolled out", "previous release",
+                                "version", "build", "shipped", "pushed to production"],
     "database_connection_exhaustion": ["connection pool", "connections at max", "pool size",
-                                        "connection exhaustion", "max_connections", "db connections"],
+                                        "connection exhaustion", "max_connections", "db connections",
+                                        "database connections", "pool exhausted", "connection limit",
+                                        "too many connections", "pool saturation"],
     "dependency_certificate_expired": ["certificate", "cert expired", "tls handshake", "expired cert",
-                                        "ssl handshake", "x.509"],
-    "feature_flag_recursion": ["feature flag", "flag evaluation", "recursive", "recursion", "flag loop"],
+                                        "ssl handshake", "x.509", "cert chain", "certificate authority",
+                                        "handshake failure", "expiry", "expired on"],
+    "feature_flag_recursion": ["feature flag", "flag evaluation", "recursive", "recursion", "flag loop",
+                                "infinite loop", "flag dependency cycle", "circular", "stack overflow",
+                                "flag re-entry"],
     "traffic_capacity_exhaustion": ["capacity", "traffic spike", "request rate", "overloaded",
-                                     "concurrent requests", "throughput"],
+                                     "concurrent requests", "throughput", "load spike", "surge",
+                                     "queue depth", "saturated", "rate exceeded", "qps"],
     "secret_rotation_mismatch": ["secret rotation", "credential rotated", "rotated secret",
-                                  "auth failure after rotation", "mismatched secret", "rotated credential"],
+                                  "auth failure after rotation", "mismatched secret", "rotated credential",
+                                  "key rotation", "stale credential", "old secret", "authentication failures began",
+                                  "401", "403", "unauthorized", "invalid credential"],
 }
 
 
