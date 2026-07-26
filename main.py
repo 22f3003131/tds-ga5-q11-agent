@@ -26,6 +26,13 @@ from typing import Optional, List, Dict, Any
 
 app = FastAPI()
 
+
+@app.get("/")
+@app.head("/")
+@app.post("/")
+def root():
+    return JSONResponse(content={"status": "ok", "service": "incident-response-agent"})
+
 DB_PATH = os.environ.get("DB_PATH", "./incidents.db")
 AIPIPE_TOKEN = os.environ.get("AIPIPE_TOKEN", "")
 DEBUG_SECRET = os.environ.get("DEBUG_SECRET", "letmein")
@@ -732,4 +739,4 @@ def debug_errors(secret: Optional[str] = None):
         with open(ERROR_LOG_PATH) as f:
             return json.load(f)
     except Exception:
-        return []
+        return []  
