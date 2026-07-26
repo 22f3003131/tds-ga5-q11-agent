@@ -645,7 +645,15 @@ def log_request_data(label, data):
                 log = json.load(f)
         except Exception:
             log = []
-        text = json.dumps(data)
+        summary = data
+        if isinstance(data, dict) and "incident" in data and isinstance(data["incident"], dict):
+            summary = dict(data)
+            summary["incident"] = dict(data["incident"])
+            transcript = summary["incident"].get("transcript", "")
+            summary["incident"]["transcript"] = (
+                f"<{len(transcript)} chars omitted; first 300: {transcript[:300]!r}>"
+            )
+        text = json.dumps(summary)
         if len(text) > 8000:
             text = text[:8000] + "...<truncated>"
         log.append({"time": time.time(), "label": label, "data_str": text})
