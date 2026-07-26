@@ -409,8 +409,30 @@ def finalize_run(conn, row, status):
 
 # ---------------- POST /v2/incidents ----------------
 
+REQUEST_LOG_PATH = os.environ.get("REQUEST_LOG_PATH", "./request_log.json")
+
+
+def log_request_data(label, data):
+    try:
+        try:
+            with open(REQUEST_LOG_PATH) as f:
+                log = json.load(f)
+        except Exception:
+            log = []
+        text = json.dumps(data)
+        if len(text) > 8000:
+            text = text[:8000] + "...<truncated>"
+        log.append({"time": time.time(), "label": label, "data_str": text})
+        log = log[-20:]
+        with open(REQUEST_LOG_PATH, "w") as f:
+            json.dump(log, f)
+    except Exception:
+        pass
+
+
 @app.post("/v2/incidents")
 def create_incident(request: Request, body: Dict[str, Any]):
+    log_request_data("incoming_incident", body)
     profile = body.get("profile")
     run_id = body.get("runId")
     agent_name = body.get("agentName")
@@ -483,6 +505,7 @@ def create_incident(request: Request, body: Dict[str, Any]):
     row = get_run(conn, run_id)
     resp = current_state_response(row)
     conn.close()
+    log_request_data("outgoing_response", resp)
     return JSONResponse(content=resp)
 
 
@@ -490,6 +513,7 @@ def create_incident(request: Request, body: Dict[str, Any]):
 
 @app.post("/v2/incidents/{run_id}/receipts")
 def post_receipt(run_id: str, body: Dict[str, Any]):
+    log_request_data(f"incoming_receipt_{run_id}", body)
     receipt_id = body.get("receiptId")
     if not receipt_id:
         raise HTTPException(status_code=400, detail="Missing receiptId")
@@ -734,6 +758,17 @@ def get_incident(run_id: str):
     if not row:
         raise HTTPException(status_code=404, detail="Run not found")
     return JSONResponse(content=current_state_response(row))
+
+
+@app.get("/debug/requests")
+def debug_requests(secret: Optional[str] = None):
+    if secret != DEBUG_SECRET:
+        raise HTTPException(status_code=404)
+    try:
+        with open(REQUEST_LOG_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return []
 
 
 @app.get("/debug/errors")
