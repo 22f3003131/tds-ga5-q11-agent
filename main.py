@@ -160,11 +160,11 @@ def call_ai(prompt: str) -> dict:
         "https://aipipe.org/openai/v1/chat/completions",
         headers={"Authorization": f"Bearer {AIPIPE_TOKEN}"},
         json={
-            "model": "gpt-4.1-mini",
+            "model": "gpt-4.1-nano",
             "messages": [{"role": "user", "content": prompt}],
             "response_format": {"type": "json_object"},
         },
-        timeout=30,
+        timeout=15,
     )
     resp.raise_for_status()
     content = resp.json()["choices"][0]["message"]["content"]
@@ -386,7 +386,7 @@ def finalize_run(conn, row, status):
     action_log = json.loads(row["action_log"])
     receipt_log = json.loads(row["receipt_log"])
     approvals_log = json.loads(row["approvals_log"])
-    otlp = build_otlp(row["run_id"], row["public_marker"], row["trace_id"], "gpt-4.1-mini",
+    otlp = build_otlp(row["run_id"], row["public_marker"], row["trace_id"], "gpt-4.1-nano",
                        action_log, receipt_log, approvals_log)
     diagnosis = json.loads(row["diagnosis"]) if row["diagnosis"] else {"rootCause": None, "evidence": []}
     final = {
