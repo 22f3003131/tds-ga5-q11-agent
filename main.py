@@ -129,6 +129,23 @@ def new_span_id() -> str:
     return secrets.token_hex(8)  # 16 lowercase hex chars
 
 
+def scrub_do_not_export(obj, forbidden_keys):
+    """Recursively strip any keys named in policy.doNotExport from a value
+    before it's stored or returned anywhere - dispatch arguments, tool
+    catalog echoes, anything. Applied defensively at every export point."""
+    if not forbidden_keys:
+        return obj
+    if isinstance(obj, dict):
+        return {
+            k: scrub_do_not_export(v, forbidden_keys)
+            for k, v in obj.items()
+            if k not in forbidden_keys
+        }
+    if isinstance(obj, list):
+        return [scrub_do_not_export(v, forbidden_keys) for v in obj]
+    return obj
+
+
 def make_traceparent(trace_id: str, span_id: str) -> str:
     return f"00-{trace_id}-{span_id}-01"
 
@@ -485,6 +502,7 @@ def create_incident(request: Request, body: Dict[str, Any]):
     evidence = plan.get("evidence", [])
     max_diag = policy.get("maximumDiagnostics", 3)
     diagnostic_calls = (plan.get("diagnosticCalls") or [])[:max_diag]
+    forbidden = set(policy.get("doNotExport", []))
 
     dispatches = []
     for call in diagnostic_calls:
@@ -496,7 +514,7 @@ def create_incident(request: Request, body: Dict[str, Any]):
             "callId": call_id,
             "phase": "diagnostic",
             "toolName": call.get("toolName"),
-            "arguments": call.get("arguments", {}),
+            "arguments": scrub_do_not_export(call.get("arguments", {}), forbidden),
             "evidence": call.get("evidence", []),
             "attempt": 1,
             "traceparent": make_traceparent(trace_id, span_id),
@@ -703,7 +721,8 @@ def process_receipt(conn, row, receipt_id, body):
             raise HTTPException(status_code=500, detail="Effect selection failed")
 
         tool_name = effect.get("toolName")
-        arguments = effect.get("arguments", {})
+        forbidden = set(policy.get("doNotExport", []))
+        arguments = scrub_do_not_export(effect.get("arguments", {}), forbidden)
 
         if tool_name in destructive:
             approval_id = new_id("appr")
