@@ -695,9 +695,16 @@ def log_request_data(label, data):
             summary = dict(data)
             summary["incident"] = dict(data["incident"])
             transcript = summary["incident"].get("transcript", "")
+            try:
+                decisive, all_ids = filter_decisive_evidence(transcript)
+            except Exception:
+                decisive, all_ids = [], []
             summary["incident"]["transcript"] = (
-                f"<{len(transcript)} chars omitted; first 300: {transcript[:300]!r}>"
+                f"<{len(transcript)} chars, {len(all_ids)} evidence lines omitted>"
             )
+            summary["incident"]["_decisive_lines_found"] = [
+                {"id": ev, "text": t} for ev, t in decisive
+            ]
         text = json.dumps(summary)
         if len(text) > 8000:
             text = text[:8000] + "...<truncated>"
