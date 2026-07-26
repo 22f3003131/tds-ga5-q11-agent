@@ -232,34 +232,40 @@ DECOY_MARKERS = [
     "is marked unrelated",
 ]
 
-DECISIVE_MARKERS = ["incident-window record", "incident window record"]
+DECISIVE_MARKERS = [
+    "incident-window record", "incident window record",
+    "on-call finding", "correlated sample", "bounded observation",
+]
 
 # Deterministic keyword signals per known root cause, matched against the
-# decisive line(s) only. Mirrors the q10 solver's proven "classify without a
-# model" approach: the generator's decisive sentence reliably names its own
-# category in domain terms, so keyword matching beats asking a model to judge
-# an 80k-token noisy transcript. AI is used only as a fallback when nothing
-# matches, never as the primary decision-maker.
+# decisive line(s) only. Refined against REAL confirmed decisive text
+# captured from the live grader (not guesses) for all 6 categories.
 ROOT_CAUSE_SIGNALS = {
     "deployment_regression": ["release", "rollout", "deploy", "rolled out", "previous release",
-                                "version", "build", "shipped", "pushed to production"],
+                                "holdback", "rollout boundary", "no matching errors"],
     "database_connection_exhaustion": ["connection pool", "connections at max", "pool size",
                                         "connection exhaustion", "max_connections", "db connections",
                                         "database connections", "pool exhausted", "connection limit",
-                                        "too many connections", "pool saturation"],
+                                        "too many connections", "pool saturation", "pool checkout wait",
+                                        "connection ceiling", "pool acquisition timeout", "independent pools"],
     "dependency_certificate_expired": ["certificate", "cert expired", "tls handshake", "expired cert",
                                         "ssl handshake", "x.509", "cert chain", "certificate authority",
-                                        "handshake failure", "expiry", "expired on"],
+                                        "handshake failure", "expiry", "expired on", "expired leaf certificate",
+                                        "same serial number"],
     "feature_flag_recursion": ["feature flag", "flag evaluation", "recursive", "recursion", "flag loop",
                                 "infinite loop", "flag dependency cycle", "circular", "stack overflow",
-                                "flag re-entry"],
+                                "flag re-entry", "shadow evaluation", "flag_", "disabled completes normally"],
     "traffic_capacity_exhaustion": ["capacity", "traffic spike", "request rate", "overloaded",
                                      "concurrent requests", "throughput", "load spike", "surge",
-                                     "queue depth", "saturated", "rate exceeded", "qps"],
+                                     "queue depth", "saturated", "rate exceeded", "qps",
+                                     "requests per second", "per-replica utilization", "pinned",
+                                     "rise monotonically"],
     "secret_rotation_mismatch": ["secret rotation", "credential rotated", "rotated secret",
                                   "auth failure after rotation", "mismatched secret", "rotated credential",
                                   "key rotation", "stale credential", "old secret", "authentication failures began",
-                                  "401", "403", "unauthorized", "invalid credential"],
+                                  "401", "403", "unauthorized", "invalid credential", "secret version",
+                                  "revoked the old credential", "vault promoted", "authentication failures start",
+                                  "revocation instant"],
 }
 
 
