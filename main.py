@@ -443,7 +443,7 @@ def log_request_data(label, data):
 
 @app.post("/v2/incidents")
 def create_incident(request: Request, body: Dict[str, Any]):
-    log_request_data("incoming_incident", body)
+    log_request_data("incoming_incident", {k: v for k, v in body.items() if k != "sensitive"})
     profile = body.get("profile")
     run_id = body.get("runId")
     agent_name = body.get("agentName")
@@ -596,7 +596,10 @@ def process_receipt(conn, row, receipt_id, body):
     policy = json.loads(row["policy"])
     diagnosis = json.loads(row["diagnosis"]) if row["diagnosis"] else {"rootCause": None, "evidence": []}
     trace_id = row["trace_id"]
-    destructive = set(policy.get("approvalRequiredFor", [])) or DESTRUCTIVE_DEFAULT
+    # rollback_deployment and disable_feature are unconditionally destructive per
+    # spec, regardless of what this incident's policy.approvalRequiredFor lists -
+    # always union with the hardcoded defaults, never rely on policy alone.
+    destructive = DESTRUCTIVE_DEFAULT | set(policy.get("approvalRequiredFor", []))
 
     new_dispatches = []
     new_approvals = []
