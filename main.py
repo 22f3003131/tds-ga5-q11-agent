@@ -12,6 +12,7 @@ Architecture (same lessons as q10):
 """
 
 import os
+import re
 import json
 import time
 import uuid
@@ -25,6 +26,28 @@ from fastapi.responses import JSONResponse
 from typing import Optional, List, Dict, Any
 
 app = FastAPI()
+
+
+class NormalizeSlashesMiddleware:
+    """Raw ASGI middleware (not BaseHTTPMiddleware) so it modifies the path
+    in scope BEFORE Starlette's router resolves the route, guaranteeing a
+    double slash (e.g. from a trailing-slash base URL + leading-slash path)
+    never causes a 404 or redirect."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            path = scope.get("path", "")
+            if "//" in path:
+                normalized = re.sub(r"/{2,}", "/", path)
+                scope = dict(scope)
+                scope["path"] = normalized
+                scope["raw_path"] = normalized.encode("utf-8")
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(NormalizeSlashesMiddleware)
 
 
 @app.get("/")
