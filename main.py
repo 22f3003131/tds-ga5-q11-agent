@@ -192,8 +192,16 @@ def get_diagnosis_and_plan(incident: dict, tool_catalog: list, policy: dict) -> 
     """One AI call: pick the root cause (citing 2-4 evidence IDs) AND the
     1-3 diagnostic tool calls needed to confirm it, with exact arguments
     matching each tool's inputSchema. The 'sensitive' object is never
-    included in this prompt - caller must have already stripped it."""
-    catalog_desc = json.dumps(tool_catalog)
+    included in this prompt - caller must have already stripped it.
+
+    CRITICAL: effect/destructive tools are excluded from the catalog shown
+    here entirely - the model must never be able to select an effect tool
+    (e.g. rollback_deployment) as a "diagnostic" call, since diagnostic
+    dispatches in the FIRST response bypass the approval gate that only
+    applies later, after diagnostics complete."""
+    effect_tool_names = set(policy.get("effectTools", [])) | DESTRUCTIVE_DEFAULT
+    diagnostic_only_catalog = [t for t in tool_catalog if t.get("name") not in effect_tool_names]
+    catalog_desc = json.dumps(diagnostic_only_catalog)
     max_diag = policy.get("maximumDiagnostics", 3)
     prompt = (
         "You are an incident-response agent. Read the transcript below and:\n"
@@ -501,8 +509,16 @@ def create_incident(request: Request, body: Dict[str, Any]):
     root_cause = plan.get("rootCause")
     evidence = plan.get("evidence", [])
     max_diag = policy.get("maximumDiagnostics", 3)
-    diagnostic_calls = (plan.get("diagnosticCalls") or [])[:max_diag]
     forbidden = set(policy.get("doNotExport", []))
+    effect_tool_names = set(policy.get("effectTools", [])) | DESTRUCTIVE_DEFAULT
+
+    # hard runtime guard: even if the model somehow returns an effect/destructive
+    # tool as a "diagnostic" call, it is dropped here before ever being dispatched -
+    # diagnostic dispatches in this first response bypass the approval gate.
+    diagnostic_calls = [
+        c for c in (plan.get("diagnosticCalls") or [])
+        if c.get("toolName") not in effect_tool_names
+    ][:max_diag]
 
     dispatches = []
     for call in diagnostic_calls:
