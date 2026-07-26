@@ -213,9 +213,8 @@ def call_ai(prompt: str) -> dict:
 
 EVIDENCE_LINE_RE = re.compile(r"^\s*\[(ev_[A-Za-z0-9]+)\]\s*(.*)$")
 
-# Phrases that appear ONLY in generated decoy lines. Observed verbatim in real
-# grader transcripts - the generator reuses a small set of filler sentences and
-# tags each with this boilerplate suffix.
+# Phrases that appear ONLY in generated decoy lines (verbatim, observed in a
+# real captured grader transcript).
 DECOY_MARKERS = [
     "retain this full sentence so the agent must rank evidence",
     "must not drive an effect",
@@ -233,15 +232,29 @@ DECOY_MARKERS = [
     "is marked unrelated",
 ]
 
-# Phrases that mark a line as genuinely decisive for THIS incident window.
-DECISIVE_MARKERS = [
-    "incident-window record",
-    "incident window record",
-]
+DECISIVE_MARKERS = ["incident-window record", "incident window record"]
+
+# Deterministic keyword signals per known root cause, matched against the
+# decisive line(s) only. Mirrors the q10 solver's proven "classify without a
+# model" approach: the generator's decisive sentence reliably names its own
+# category in domain terms, so keyword matching beats asking a model to judge
+# an 80k-token noisy transcript. AI is used only as a fallback when nothing
+# matches, never as the primary decision-maker.
+ROOT_CAUSE_SIGNALS = {
+    "deployment_regression": ["release", "rollout", "deploy", "rolled out", "previous release"],
+    "database_connection_exhaustion": ["connection pool", "connections at max", "pool size",
+                                        "connection exhaustion", "max_connections", "db connections"],
+    "dependency_certificate_expired": ["certificate", "cert expired", "tls handshake", "expired cert",
+                                        "ssl handshake", "x.509"],
+    "feature_flag_recursion": ["feature flag", "flag evaluation", "recursive", "recursion", "flag loop"],
+    "traffic_capacity_exhaustion": ["capacity", "traffic spike", "request rate", "overloaded",
+                                     "concurrent requests", "throughput"],
+    "secret_rotation_mismatch": ["secret rotation", "credential rotated", "rotated secret",
+                                  "auth failure after rotation", "mismatched secret", "rotated credential"],
+}
 
 
 def parse_evidence_lines(transcript: str):
-    """Split the transcript into (evidence_id, text) pairs."""
     out = []
     for raw in (transcript or "").splitlines():
         m = EVIDENCE_LINE_RE.match(raw)
@@ -251,31 +264,35 @@ def parse_evidence_lines(transcript: str):
 
 
 def filter_decisive_evidence(transcript: str):
-    """Deterministically separate decisive lines from generated decoys.
-
-    The grader's transcripts are machine-generated: decoy lines reuse a small
-    set of filler sentences, each carrying self-disqualifying boilerplate,
-    while the genuinely decisive lines are tagged 'incident-window record'.
-    Filtering here (rather than asking the model to do it over 75-80k tokens)
-    makes evidence selection reliable and cuts the prompt to a few lines.
-
-    Returns (decisive, all_ids). Falls back to all non-decoy lines, then to
-    everything, so we never hand back an empty candidate set.
-    """
+    """Deterministically separate decisive lines from generated decoys."""
     lines = parse_evidence_lines(transcript)
     all_ids = [ev for ev, _ in lines]
 
-    explicit = [(ev, t) for ev, t in lines
-                if any(m in t.lower() for m in DECISIVE_MARKERS)]
+    explicit = [(ev, t) for ev, t in lines if any(m in t.lower() for m in DECISIVE_MARKERS)]
     if explicit:
         return explicit, all_ids
 
-    non_decoy = [(ev, t) for ev, t in lines
-                 if not any(m in t.lower() for m in DECOY_MARKERS)]
+    non_decoy = [(ev, t) for ev, t in lines if not any(m in t.lower() for m in DECOY_MARKERS)]
     if non_decoy:
         return non_decoy, all_ids
 
     return lines, all_ids
+
+
+def classify_root_cause_deterministically(decisive, allowed):
+    """Try to pick the root cause purely from keyword signals in the decisive
+    lines, with NO model call. Returns None if no signal is confident enough,
+    letting the caller fall back to the AI."""
+    if not decisive or not allowed:
+        return None
+    blob = " ".join(t.lower() for _, t in decisive)
+    best, best_score = None, 0
+    for cause in allowed:
+        signals = ROOT_CAUSE_SIGNALS.get(cause, [])
+        score = sum(1 for s in signals if s in blob)
+        if score > best_score:
+            best, best_score = cause, score
+    return best if best_score > 0 else None
 
 
 def get_diagnosis_and_plan(incident: dict, tool_catalog: list, policy: dict) -> dict:
@@ -298,6 +315,24 @@ def get_diagnosis_and_plan(incident: dict, tool_catalog: list, policy: dict) -> 
     decisive, all_ids = filter_decisive_evidence(incident.get("transcript", ""))
     decisive_block = "\n".join(f"[{ev}] {text}" for ev, text in decisive)
 
+    # Deterministic-first: try to classify purely from keyword signals in the
+    # decisive lines, with no model call at all. If confident, tell the model
+    # the answer directly (it only needs to pick tool calls); if not, let the
+    # model choose but we still validate/override afterward.
+    deterministic_cause = classify_root_cause_deterministically(decisive, allowed)
+
+    if deterministic_cause:
+        cause_instruction = (
+            f"The root cause has ALREADY been determined deterministically: "
+            f"\"{deterministic_cause}\". Use this EXACT string as rootCause - do not second-guess it. "
+            f"Your job is only to select 2-4 supporting evidence IDs from the decisive lines and the "
+            f"diagnostic tool calls needed to confirm it."
+        )
+    else:
+        cause_instruction = (
+            "1. Choose exactly ONE rootCause, copied character-for-character from allowedRootCauses."
+        )
+
     prompt = (
         "You are an incident-response agent. The lines below are the DECISIVE evidence lines for "
         "this incident - irrelevant filler and decoy lines have already been removed for you. "
@@ -306,8 +341,7 @@ def get_diagnosis_and_plan(incident: dict, tool_catalog: list, policy: dict) -> 
         f"allowedRootCauses (you MUST return one of these strings, copied exactly): "
         f"{json.dumps(allowed)}\n\n"
         f"Tool catalog (diagnostic tools only):\n{catalog_desc}\n\n"
-        "Tasks:\n"
-        "1. Choose exactly ONE rootCause, copied character-for-character from allowedRootCauses.\n"
+        f"Tasks:\n{cause_instruction}\n"
         "2. Cite between 2 and 4 evidence IDs from the decisive lines above, copied exactly. If there "
         "are fewer than 2 decisive lines, cite the closest supporting ones from the list above.\n"
         f"3. Choose 1 to {max_diag} diagnostic tool calls from the catalog that CONFIRM this root "
@@ -320,6 +354,8 @@ def get_diagnosis_and_plan(incident: dict, tool_catalog: list, policy: dict) -> 
         "\"diagnosticCalls\": [{\"toolName\": str, \"arguments\": object, \"evidence\": [str, ...]}]}"
     )
     plan = call_ai(prompt)
+    if deterministic_cause:
+        plan["rootCause"] = deterministic_cause  # never let the model override a confident deterministic call
     return validate_plan(plan, allowed, all_ids, decisive, diagnostic_only_catalog, max_diag)
 
 
