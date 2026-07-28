@@ -196,19 +196,28 @@ def parse_incoming_traceparent(header_value: Optional[str]):
 # ---------------- AI calls ----------------
 
 def call_ai(prompt: str) -> dict:
-    resp = httpx.post(
-        "https://aipipe.org/openai/v1/chat/completions",
-        headers={"Authorization": f"Bearer {AIPIPE_TOKEN}"},
-        json={
-            "model": "gpt-4.1-mini",
-            "messages": [{"role": "user", "content": prompt}],
-            "response_format": {"type": "json_object"},
-        },
-        timeout=17,
-    )
-    resp.raise_for_status()
-    content = resp.json()["choices"][0]["message"]["content"]
-    return json.loads(content)
+    last_exc = None
+    for attempt in range(2):  # one retry on rate limit, staying well under the 18s budget
+        try:
+            resp = httpx.post(
+                "https://aipipe.org/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {AIPIPE_TOKEN}"},
+                json={
+                    "model": "gpt-4.1-mini",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "response_format": {"type": "json_object"},
+                },
+                timeout=8,
+            )
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"]
+            return json.loads(content)
+        except Exception as e:
+            last_exc = e
+            if attempt == 0:
+                time.sleep(0.5)
+                continue
+            raise last_exc
 
 
 EVIDENCE_LINE_RE = re.compile(r"^\s*\[(ev_[A-Za-z0-9]+)\]\s*(.*)$")
@@ -328,6 +337,79 @@ def classify_root_cause_deterministically(decisive, allowed):
     return best if best_score > 0 else None
 
 
+_TOOL_AFFINITY = {
+    "deployment_regression": ["inspect_deployment", "query_logs", "query_metrics"],
+    "database_connection_exhaustion": ["query_metrics", "query_logs", "dependency_status"],
+    "dependency_certificate_expired": ["dependency_status", "query_logs", "read_runbook"],
+    "feature_flag_recursion": ["query_logs", "inspect_deployment", "query_metrics"],
+    "traffic_capacity_exhaustion": ["query_metrics", "query_logs", "dependency_status"],
+    "secret_rotation_mismatch": ["read_runbook", "query_logs", "dependency_status"],
+}
+
+
+def _build_deterministic_args(tool: dict, incident: dict, root_cause: str) -> dict:
+    """Fill a tool's required schema fields with sensible, real values derived
+    from the incident - no model needed."""
+    required = (tool.get("inputSchema") or {}).get("required", []) or []
+    service = incident.get("service", "")
+    args = {}
+    for key in required:
+        kl = key.lower()
+        if "service" in kl:
+            args[key] = service
+        elif "severity" in kl:
+            args[key] = incident.get("severity", "SEV-1")
+        elif "metric" in kl:
+            args[key] = root_cause
+        elif "topic" in kl:
+            args[key] = root_cause
+        elif "query" in kl:
+            args[key] = f"{root_cause} evidence"
+        elif "reason" in kl:
+            args[key] = root_cause
+        elif "window" in kl or "minutes" in kl:
+            args[key] = 30
+        elif "dependency" in kl:
+            args[key] = "dep_upstream"
+        else:
+            args[key] = service or root_cause
+    return args
+
+
+def deterministic_fallback_plan(incident, allowed, catalog, max_diag, decisive, all_ids):
+    """Zero-model-call plan: used whenever the AI is unavailable (rate limited,
+    timed out, erroring) so a transient AI outage never crashes the whole
+    request. Uses the same deterministic root-cause classifier, plus simple
+    per-cause tool-name affinity and schema-derived arguments."""
+    root_cause = classify_root_cause_deterministically(decisive, allowed) or (allowed[0] if allowed else "")
+
+    evidence = [ev for ev, _ in decisive][:4]
+    if len(evidence) < 2:
+        evidence = (evidence + all_ids)[:4]
+    if len(evidence) < 2 and all_ids:
+        evidence = all_ids[:2]
+
+    catalog_names = {t.get("name") for t in catalog}
+    preferred = [name for name in _TOOL_AFFINITY.get(root_cause, []) if name in catalog_names]
+    if not preferred and catalog:
+        preferred = [catalog[0].get("name")]
+    chosen_names = preferred[:min(2, max_diag)] or preferred[:1]
+
+    diagnostic_calls = []
+    for i, name in enumerate(chosen_names):
+        tool = next((t for t in catalog if t.get("name") == name), None)
+        if not tool:
+            continue
+        ev_id = evidence[i] if i < len(evidence) else (evidence[0] if evidence else None)
+        diagnostic_calls.append({
+            "toolName": name,
+            "arguments": _build_deterministic_args(tool, incident, root_cause),
+            "evidence": [ev_id] if ev_id else [],
+        })
+
+    return {"rootCause": root_cause, "evidence": evidence, "diagnosticCalls": diagnostic_calls}
+
+
 def get_diagnosis_and_plan(incident: dict, tool_catalog: list, policy: dict) -> dict:
     """One AI call: pick the root cause (citing 2-4 evidence IDs) AND the
     1-3 diagnostic tool calls needed to confirm it, with exact arguments
@@ -388,7 +470,11 @@ def get_diagnosis_and_plan(incident: dict, tool_catalog: list, policy: dict) -> 
         "Return strict JSON: {\"rootCause\": str, \"evidence\": [str, ...], "
         "\"diagnosticCalls\": [{\"toolName\": str, \"arguments\": object, \"evidence\": [str]}]}"
     )
-    plan = call_ai(prompt)
+    try:
+        plan = call_ai(prompt)
+    except Exception as e:
+        log_error("get_diagnosis_and_plan:ai_fallback", e, {"reason": "using deterministic fallback plan"})
+        plan = deterministic_fallback_plan(incident, allowed, diagnostic_only_catalog, max_diag, decisive, all_ids)
     if deterministic_cause:
         plan["rootCause"] = deterministic_cause  # never let the model override a confident deterministic call
     return validate_plan(plan, allowed, all_ids, decisive, diagnostic_only_catalog, max_diag)
